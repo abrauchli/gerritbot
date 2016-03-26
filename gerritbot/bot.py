@@ -92,7 +92,6 @@ class GerritBot(irc.bot.SingleServerIRCBot):
         self.log = logging.getLogger('gerritbot')
 
     def on_nicknameinuse(self, c, e):
-        self.log.info('Nick previously in use, recovering.')
         c.nick(c.get_nickname() + "_")
         c.privmsg("nickserv", "identify %s " % self.password)
         c.privmsg("nickserv", "ghost %s %s" % (self.nickname, self.password))
@@ -104,7 +103,6 @@ class GerritBot(irc.bot.SingleServerIRCBot):
     def on_welcome(self, c, e):
         self.log.info('Identifying with IRC server.')
         c.privmsg("nickserv", "identify %s " % self.password)
-        self.log.info('Identified with IRC server.')
         for channel in self.channel_list:
             c.join(channel)
             self.log.info('Joined channel %s' % channel)
@@ -154,7 +152,6 @@ class Gerrit(threading.Thread):
             data['change']['project'],
             data['change']['subject'],
             data['change']['url'])
-        self.log.info('Compiled Message %s: %s' % (channel, msg))
         self.ircbot.send(channel, msg)
 
     def ref_updated(self, channel, data):
@@ -168,7 +165,6 @@ class Gerrit(threading.Thread):
                 data['refUpdate']['project'],
                 tag
             )
-            self.log.info('Compiled Message %s: %s' % (channel, msg))
             self.ircbot.send(channel, msg)
 
     def comment_added(self, channel, data):
@@ -176,7 +172,6 @@ class Gerrit(threading.Thread):
             data['change']['project'],
             data['change']['subject'],
             data['change']['url'])
-        self.log.info('Compiled Message %s: %s' % (channel, msg))
         self.ircbot.send(channel, msg)
 
         for approval in data.get('approvals', []):
@@ -187,7 +182,6 @@ class Gerrit(threading.Thread):
                     data['change']['project'],
                     data['change']['subject'],
                     data['change']['url'])
-                self.log.info('Compiled Message %s: %s' % (channel, msg))
                 self.ircbot.send(channel, msg)
 
             if (approval['type'] == 'VRIF' and approval['value'] == '2'
@@ -197,7 +191,6 @@ class Gerrit(threading.Thread):
                     data['change']['project'],
                     data['change']['subject'],
                     data['change']['url'])
-                self.log.info('Compiled Message %s: %s' % (channel, msg))
                 self.ircbot.send(channel, msg)
 
             if (approval['type'] == 'CRVW' and approval['value'] == '-2'
@@ -207,7 +200,6 @@ class Gerrit(threading.Thread):
                     data['change']['project'],
                     data['change']['subject'],
                     data['change']['url'])
-                self.log.info('Compiled Message %s: %s' % (channel, msg))
                 self.ircbot.send(channel, msg)
 
             if (approval['type'] == 'CRVW' and approval['value'] == '2'
@@ -217,7 +209,6 @@ class Gerrit(threading.Thread):
                     data['change']['project'],
                     data['change']['subject'],
                     data['change']['url'])
-                self.log.info('Compiled Message %s: %s' % (channel, msg))
                 self.ircbot.send(channel, msg)
 
     def change_merged(self, channel, data):
@@ -225,7 +216,6 @@ class Gerrit(threading.Thread):
             data['change']['project'],
             data['change']['subject'],
             data['change']['url'])
-        self.log.info('Compiled Message %s: %s' % (channel, msg))
         self.ircbot.send(channel, msg)
 
     def _read(self, data):
@@ -243,8 +233,8 @@ class Gerrit(threading.Thread):
             # The data we care about was not present, no channels want
             # this event.
             channel_set = set()
-        self.log.info('Potential channels to receive event notification: %s' %
-                      channel_set)
+        self.log.debug('Potential channels to receive event notification: %s' %
+                       channel_set)
         for channel in channel_set:
             if data['type'] == 'comment-added':
                 self.comment_added(channel, data)
@@ -261,7 +251,6 @@ class Gerrit(threading.Thread):
                 self.connect()
             try:
                 event = self.gerrit.getEvent()
-                self.log.info('Received event: %s' % event)
                 self._read(event)
             except Exception:
                 self.log.exception('Exception encountered in event loop')
