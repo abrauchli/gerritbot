@@ -119,6 +119,10 @@ class GerritBot(irc.bot.SingleServerIRCBot):
 
 
 class Gerrit(threading.Thread):
+    TARGET_USER_ID = 'username'
+    SOURCE_USER_ID = 'name'
+    WILDCARD = '*'
+
     def __init__(self, ircbot, channel_config, server,
                  username, port=29418, keyfile=None):
         super(Gerrit, self).__init__()
@@ -130,6 +134,7 @@ class Gerrit(threading.Thread):
         self.port = port
         self.keyfile = keyfile
         self.connected = False
+        self.reviewer_list = {}
 
     def connect(self):
         # Import here because it needs to happen after daemonization
@@ -146,89 +151,187 @@ class Gerrit(threading.Thread):
             # Delay before attempting again.
             time.sleep(1)
 
+    def add_reviewer(self, data):
+        key = data['change']['id']
+        if not self.reviewer_list.has_key(key):
+            self.reviewer_list[key] = []
+        self.reviewer_list[key].append(key)
+        self.reviewer_list[key].sort()
+
+    def clear_reviewers(self, data):
+        key = data['change']['id']
+        if self.reviewer_list.has_key(key):
+            del self.reviewer_list[key]
+
+    def get_reviewers(self, data):
+        key = data['change']['id']
+        if self.reviewer_list.has_key(key):
+            return self.reviewer_list[key]
+        return []
+
+    def channel_has_event(self, event):
+        return (self.channel_config.events.get(Gerrit.WILDCARD, False) or
+                event in self.channel_config.events.get(event, set()))
+
+    def channel_has_project(self, project):
+        return (self.channel_config.projects.get(Gerrit.WILDCARD, False) or
+                project in self.channel_config.projects.get(project, set()))
+
+    def channel_has_branch(self, branch):
+        return (self.channel_config.branches.get(Gerrit.WILDCARD, False) or
+                branch in self.channel_config.branches.get(branch, set()))
+
+    def project_description(self, data):
+        return '%s: %s  %s' % (data['change']['project'],
+                               data['change']['subject'],
+                               data['change']['url'])
+
+    def patchset_size_str(self, data):
+        size_ins = data['patchSet']['sizeInsertions']
+        size_del = abs(data['patchSet']['sizeDeletions'])
+        return '+%d/-%d' % (size_ins, size_del)
+
     def patchset_created(self, channel, data):
-        msg = '%s proposed %s: %s  %s' % (
-            data['patchSet']['uploader']['name'],
-            data['change']['project'],
-            data['change']['subject'],
-            data['change']['url'])
+        if data['patchSet']['number'] == '1':
+            reviewers = ''
+            patchset = 'created (%s)' % self.patchset_size_str(data)
+        else:
+            reviewers = ','.join(self.get_reviewers(data))
+            if reviewers:
+                reviewers += ': '
+            if data['patchSet']['kind'] == 'TRIVIAL_REBASE':
+                rebase = 'rebased patchset %s of' % data['patchSet']['number']
+            else:
+                patchset = 'added patchset %s to' % data['patchSet']['number']
+        msg = '%s%s %s %s' % (reviewers,
+                              data['patchSet']['uploader'][Gerrit.SOURCE_USER_ID],
+                              patchset,
+                              self.project_description(data))
         self.ircbot.send(channel, msg)
 
     def ref_updated(self, channel, data):
         refName = data['refUpdate']['refName']
-        m = re.match(r'(refs/tags)/(.*)', refName)
+        tag_re = re.match(r'(refs/tags)/(.*)', refName)
+        msg = None
 
-        if m:
-            tag = m.group(2)
-            msg = '%s tagged project %s with %s' % (
-                data['submitter']['username'],
-                data['refUpdate']['project'],
-                tag
+        if tag_re:
+            msg = 'tagged %s' % tag_re.group(2)
+        elif data['refUpdate']['oldRev'] == '0000000000000000000000000000000000000000':
+            msg = 'created branch %s' % refName
+
+        if msg:
+            msg = '%s %s on %s' % (
+                data['submitter'][Gerrit.SOURCE_USER_ID],
+                msg,
+                data['refUpdate']['project']
             )
             self.ircbot.send(channel, msg)
 
-    def comment_added(self, channel, data):
-        msg = 'A comment has been added to a proposed change to %s: %s  %s' % (
-            data['change']['project'],
-            data['change']['subject'],
-            data['change']['url'])
-        self.ircbot.send(channel, msg)
+    def approval_changed(self, channel, data):
+        approval_list = []
+        comment = ''
+        if data['author']['username'] != 'jenkins':
+            head_end = data['comment'].find('\n\n')
+            if head_end > 0:
+                comment = data['comment'][head_end + 1:].replace('\n', ' ')
 
         for approval in data.get('approvals', []):
-            if (approval['type'] == 'VRIF' and approval['value'] == '-2'
-                and channel in self.channel_config.events.get(
-                    'x-vrif-minus-2', set())):
-                msg = 'Verification of a change to %s failed: %s  %s' % (
-                    data['change']['project'],
-                    data['change']['subject'],
-                    data['change']['url'])
-                self.ircbot.send(channel, msg)
+            intvalue = int(approval['value'])
+            absvalue = abs(intvalue)
+            textvalue = (intvalue >= 0 and '+' or '') + str(intvalue)
+            sign = intvalue >= 0 and 'plus' or 'minus'
+            if approval['type'] == 'Verified':
+                event = 'verified-%s-%d' % (sign, absvalue)
+                if self.channel_has_event(event):
+                    approval_list.append('Verified%s' % textvalue)
 
-            if (approval['type'] == 'VRIF' and approval['value'] == '2'
-                and channel in self.channel_config.events.get(
-                    'x-vrif-plus-2', set())):
-                msg = 'Verification of a change to %s succeeded: %s  %s' % (
-                    data['change']['project'],
-                    data['change']['subject'],
-                    data['change']['url'])
-                self.ircbot.send(channel, msg)
+            elif approval['type'] == 'Code-Review':
+                if absvalue == 1:
+                    sign = 'plus-minus'
+                event = 'review-%s-%d' % (sign, absvalue)
+                if self.channel_has_event(event):
+                    approval_list.append('CR%s' % textvalue)
 
-            if (approval['type'] == 'CRVW' and approval['value'] == '-2'
-                and channel in self.channel_config.events.get(
-                    'x-crvw-minus-2', set())):
-                msg = 'A change to %s has been rejected: %s  %s' % (
-                    data['change']['project'],
-                    data['change']['subject'],
-                    data['change']['url'])
-                self.ircbot.send(channel, msg)
+        if approval_list:
+            msg = '%s: %s%s by %s on %s' % (data['change']['owner'][Gerrit.TARGET_USER_ID],
+                                            ', '.join(approval_list),
+                                            comment,
+                                            data['author'][Gerrit.SOURCE_USER_ID],
+                                            self.project_description(data))
+            self.ircbot.send(channel, msg)
 
-            if (approval['type'] == 'CRVW' and approval['value'] == '2'
-                and channel in self.channel_config.events.get(
-                    'x-crvw-plus-2', set())):
-                msg = 'A change to %s has been approved: %s  %s' % (
-                    data['change']['project'],
-                    data['change']['subject'],
-                    data['change']['url'])
-                self.ircbot.send(channel, msg)
+    def comment_added(self, channel, data):
+        if data['author']['username'] == 'jenkins':
+            return
+        if data['change']['owner']['username'] == data['author']['username']:
+            target = ','.join(self.get_reviewers(data))
+        else:
+            target = data['change']['owner'][Gerrit.TARGET_USER_ID]
+        if target:
+            target += ': '
+        comment = data['comment']
+        comment_head_end = comment.find('\n\n')
+        if comment_head_end >= 0:
+            comment = comment[comment_head_end + 2:]
+        comment = comment.replace('\n', ' ')
+        msg = '%s%s commented %s on %s' % (
+            target,
+            data['author'][Gerrit.SOURCE_USER_ID],
+            comment,
+            self.project_description(data)
+        )
+        self.ircbot.send(channel, msg)
+
+    def reviewer_added(self, channel, data):
+        msg = '%s: %s invites you to review %s' % (
+            data['reviewer'][Gerrit.TARGET_USER_ID],
+            data['change']['owner'][Gerrit.SOURCE_USER_ID],
+            self.project_description(data)
+        )
+        self.ircbot.send(channel, msg)
 
     def change_merged(self, channel, data):
-        msg = 'Merged %s: %s  %s' % (
-            data['change']['project'],
-            data['change']['subject'],
-            data['change']['url'])
+        msg = '%s merged %s' % (data['submitter'][Gerrit.SOURCE_USER_ID],
+                                self.project_description(data))
+        self.ircbot.send(channel, msg)
+
+    def change_abandoned(self, channel, data):
+        reason = data['reason']
+        if reason:
+            reason = ': ' + reason
+        msg = '%s abandoned %s%s' % (data['abandoner'][Gerrit.SOURCE_USER_ID],
+                                     self.project_description(data),
+                                     reason)
+        self.ircbot.send(channel, msg)
+
+    def change_restored(self, channel, data):
+        reason = data['reason']
+        if reason:
+            reason = ': ' + reason
+        msg = '%s restored %s%s' % (data['restorer'][Gerrit.SOURCE_USER_ID],
+                                    self.project_description(data),
+                                    reason)
         self.ircbot.send(channel, msg)
 
     def _read(self, data):
+        event = None
         try:
-            if data['type'] == 'ref-updated':
-                channel_set = self.channel_config.events.get('ref-updated')
-            else:
-                channel_set = (self.channel_config.projects.get(
-                    data['change']['project'], set()) &
-                    self.channel_config.events.get(
-                        data['type'], set()) &
-                    self.channel_config.branches.get(
-                        data['change']['branch'], set()))
+            event = data['type']
+            if event == 'reviewer-added':
+                self.add_reviewer(data)
+            elif event in ['change-merged', 'change-abandoned']:
+                self.clear_reviewers(data)
+
+            channel_set = (self.channel_config.events.get(Gerrit.WILDCARD, set()) |
+                           self.channel_config.events.get(event, set()))
+            if event != 'ref-updated':
+                projects = (self.channel_config.projects.get(Gerrit.WILDCARD, set()) |
+                            self.channel_config.projects.get(
+                                            data['change']['project'], set()))
+                branches = (self.channel_config.branches.get(Gerrit.WILDCARD, set()) |
+                            self.channel_config.branches.get(
+                                            data['change']['branch'], set()))
+                channel_set &= projects & branches
         except KeyError:
             # The data we care about was not present, no channels want
             # this event.
@@ -236,14 +339,23 @@ class Gerrit(threading.Thread):
         self.log.debug('Potential channels to receive event notification: %s' %
                        channel_set)
         for channel in channel_set:
-            if data['type'] == 'comment-added':
-                self.comment_added(channel, data)
-            elif data['type'] == 'patchset-created':
+            if event == 'comment-added':
+                if data.has_key('approvals'):
+                    self.approval_changed(channel, data)
+                else:
+                    self.comment_added(channel, data)
+            elif event == 'patchset-created':
                 self.patchset_created(channel, data)
-            elif data['type'] == 'change-merged':
+            elif event == 'change-merged':
                 self.change_merged(channel, data)
-            elif data['type'] == 'ref-updated':
+            elif event == 'change-abandoned':
+                self.change_abandoned(channel, data)
+            elif event == 'change-restored':
+                self.change_restored(channel, data)
+            elif event == 'ref-updated':
                 self.ref_updated(channel, data)
+            elif event == 'reviewer-added':
+                self.reviewer_added(channel, data)
 
     def run(self):
         while True:
