@@ -153,9 +153,10 @@ class Gerrit(threading.Thread):
 
     def add_reviewer(self, data):
         key = data['change']['id']
+        value = data['reviewer'][Gerrit.TARGET_USER_ID]
         if not self.reviewer_list.has_key(key):
             self.reviewer_list[key] = []
-        self.reviewer_list[key].append(key)
+        self.reviewer_list[key].append(value)
         self.reviewer_list[key].sort()
 
     def clear_reviewers(self, data):
@@ -200,7 +201,7 @@ class Gerrit(threading.Thread):
             if reviewers:
                 reviewers += ': '
             if data['patchSet']['kind'] == 'TRIVIAL_REBASE':
-                rebase = 'rebased patchset %s of' % data['patchSet']['number']
+                patchset = 'rebased patchset %s of' % data['patchSet']['number']
             else:
                 patchset = 'added patchset %s to' % data['patchSet']['number']
         msg = '%s%s %s %s' % (reviewers,
@@ -296,9 +297,10 @@ class Gerrit(threading.Thread):
         self.ircbot.send(channel, msg)
 
     def change_abandoned(self, channel, data):
-        reason = data['reason']
-        if reason:
-            reason = ': ' + reason
+        if data.has_key('reason') and data['reason']:
+            reason = ': ' + data['reason']
+        else:
+            reason = ''
         msg = '%s abandoned %s%s' % (data['abandoner'][Gerrit.SOURCE_USER_ID],
                                      self.project_description(data),
                                      reason)
