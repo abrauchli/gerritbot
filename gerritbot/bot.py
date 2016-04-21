@@ -122,6 +122,7 @@ class Gerrit(threading.Thread):
     TARGET_USER_ID = 'username'
     SOURCE_USER_ID = 'name'
     WILDCARD = '*'
+    EMPTY_GIT_HASH = '0000000000000000000000000000000000000000'
 
     def __init__(self, ircbot, channel_config, server,
                  username, port=29418, keyfile=None):
@@ -216,8 +217,13 @@ class Gerrit(threading.Thread):
         msg = None
 
         if tag_re:
-            msg = 'tagged %s' % tag_re.group(2)
-        elif data['refUpdate']['oldRev'] == '0000000000000000000000000000000000000000':
+            if data['refUpdate']['oldRev'] == Gerrit.EMPTY_GIT_HASH:
+                msg = 'tagged %s' % tag_re.group(2)
+            elif data['refUpdate']['newRev'] == Gerrit.EMPTY_GIT_HASH:
+                msg = 'removed tag %s' % tag_re.group(2)
+            else:
+                msg = 'updated tag %s' % tag_re.group(2)
+        elif data['refUpdate']['oldRev'] == Gerrit.EMPTY_GIT_HASH:
             msg = 'created branch %s' % refName
 
         if msg:
@@ -451,8 +457,9 @@ def main():
         pid_path = "/var/run/gerritbot/gerritbot.pid"
 
     pid = pid_file_module.TimeoutPIDLockFile(pid_path, 10)
-    with daemon.DaemonContext(pidfile=pid, working_directory=os.getcwd()):
-        _main(config)
+    #with daemon.DaemonContext(pidfile=pid, working_directory=os.getcwd()):
+    #    _main(config)
+    _main(config)
 
 
 def setup_logging(config):
