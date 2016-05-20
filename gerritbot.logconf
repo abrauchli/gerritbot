@@ -1,0 +1,25 @@
+[loggers]
+keys=root
+
+[handlers]
+keys=logfile
+
+[formatters]
+keys=logfileform
+
+[logger_root]
+#level=NOTSET|DEBUG|INFO|WARN|ERROR|CRITICAL
+level=NOTSET
+handlers=logfile
+
+[handler_logfile]
+class=FileHandler
+#level=NOTSET|DEBUG|INFO|WARN|ERROR|CRITICAL
+level=NOTSET
+formatter=logfileform
+args=('gerritbot.log', 'w')
+
+[formatter_logfileform]
+format=%(asctime)s %(levelname)s %(message)s
+datefmt=%Y-%m-%d %H:%M:%S
+class=logging.Formatter

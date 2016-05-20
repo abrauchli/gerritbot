@@ -17,11 +17,11 @@
 PATH=/sbin:/usr/sbin:/bin:/usr/bin
 DESC="GerritBot"
 NAME=gerritbot
-DAEMON=/usr/local/bin/$NAME
-DAEMON_ARGS="/home/gerrit2/gerritbot.config"
-PIDFILE=/var/run/$NAME/$NAME.pid
+DAEMON=/home/jenkins/bin/$NAME
+DAEMON_ARGS="/home/jenkins/gerritbot/gerritbot.config"
+PIDFILE=/home/jenkins/gerritbot/$NAME.pid
 SCRIPTNAME=/etc/init.d/$NAME
-USER=gerrit2
+USER=jenkins
 
 # Exit if the package is not installed
 [ -x "$DAEMON" ] || exit 0
