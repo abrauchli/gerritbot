@@ -213,18 +213,24 @@ class Gerrit(threading.Thread):
 
     def ref_updated(self, channel, data):
         refName = data['refUpdate']['refName']
-        tag_re = re.match(r'(refs/tags)/(.*)', refName)
+        ref_re = re.match(r'refs/([^/]*)/(.*)', refName)
         msg = None
 
-        if tag_re:
-            if data['refUpdate']['oldRev'] == Gerrit.EMPTY_GIT_HASH:
-                msg = 'tagged %s' % tag_re.group(2)
-            elif data['refUpdate']['newRev'] == Gerrit.EMPTY_GIT_HASH:
-                msg = 'removed tag %s' % tag_re.group(2)
-            else:
-                msg = 'updated tag %s' % tag_re.group(2)
-        elif data['refUpdate']['oldRev'] == Gerrit.EMPTY_GIT_HASH:
-            msg = 'created branch %s' % refName
+        if ref_re and ref_re.group(1) in ('tags', 'heads'):
+            if ref_re.group(1) == 'tags':
+                if data['refUpdate']['oldRev'] == Gerrit.EMPTY_GIT_HASH:
+                    msg = 'tagged %s' % ref_re.group(2)
+                elif data['refUpdate']['newRev'] == Gerrit.EMPTY_GIT_HASH:
+                    msg = 'removed tag %s' % ref_re.group(2)
+                else:
+                    msg = 'updated tag %s' % ref_re.group(2)
+            if ref_re.group(1) == 'heads':
+                if data['refUpdate']['oldRev'] == Gerrit.EMPTY_GIT_HASH:
+                    msg = 'created branch %s' % branch_name.group(2)
+                else:
+                    msg = 'force-updated branch %s' % branch_name.group(2)
+        else:
+            msg = 'touched ref %s' % refName
 
         if msg:
             msg = '%s %s on %s' % (
@@ -251,6 +257,8 @@ class Gerrit(threading.Thread):
                 event = 'verified-%s-%d' % (sign, absvalue)
                 if self.channel_has_event(event):
                     approval_list.append('Verified%s' % textvalue)
+                if intvalue < 0 and data['comment'].endswith('ABORTED'):
+                    approval_list.append('aborted')
 
             elif approval['type'] == 'Code-Review':
                 if absvalue == 1:
@@ -270,10 +278,15 @@ class Gerrit(threading.Thread):
     def comment_added(self, channel, data):
         if data['author']['username'] == 'jenkins':
             return
-        if data['change']['owner']['username'] == data['author']['username']:
-            target = ','.join(self.get_reviewers(data))
+        reviewers = self.get_reviewers(data)
+        author = data['author']['username']
+        if author == data['change']['owner']['username']:
+            target = ','.join(reviewers)
         else:
-            target = data['change']['owner'][Gerrit.TARGET_USER_ID]
+            if author in reviewers:
+                reviers.remove('author')
+            reviewers.insert(0, data['change']['owner'][Gerrit.TARGET_USER_ID])
+            target = ','.join(reviewers)
         if target:
             target += ': '
         comment = data['comment']
